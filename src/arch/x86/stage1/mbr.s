@@ -47,13 +47,13 @@ _clear_cs:
 	or $3,%al
 	int $0x10 #Set a known video mode
 	
-	pushw $0x0000
+	pushw $0x1000
 	pop %es
-	mov $0x8000,%di
+	xor %di,%di
 	mov $1,%eax
 	xor %ebp,%ebp
 	call _read_disk
-	jmp $0x0000,$0x8000
+	jmp $0x1000,$0x0000
 _endless_loop:
 	cli
 	hlt

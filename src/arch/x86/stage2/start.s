@@ -5,9 +5,15 @@
 .global _start
 
 _start:
+	mov %cs,%ax
+	mov %ax,%es
+	mov %ax,%ds
+	mov %ax,%gs
+	mov %ax,%fs
 	cli
-
-	lgdt _GDTR
+	
+	mov $_GDTR,%ebx
+	lgdt (%bx)
 
 	mov %cr0,%eax
 	or $1,%eax
@@ -130,7 +136,7 @@ _lm_start:
 	mov %ax,%gs
 	mov %ax,%fs
 
-	mov $0x7c00,%rsp
+	mov $_stack_top,%rsp
 
 	jmp cmain
 	
@@ -158,14 +164,14 @@ _GDT:
 	.code16:
 	.word 0xffff
 	.word 0x0000
-	.byte 0x00
+	.byte 0x01
 	.byte 0x9a
 	.byte 0x8f
 	.byte 0x00
 	.data16:
 	.word 0xffff
 	.word 0x0000
-	.byte 0x00
+	.byte 0x01
 	.byte 0x92
 	.byte 0x8f
 	.byte 0x00
@@ -205,8 +211,17 @@ _GDTR:
 
 .bss
 .align 0x1000
-.lcomm pml4,0x1000
-.lcomm pdp,0x1000
-.lcomm pd,0x1000
-.lcomm pt1,0x1000
-.lcomm pt2,0x1000
+_stack_bottom:
+	.skip 0x4000
+_stack_top:
+
+pml4:
+	.skip 0x1000
+pdp:
+	.skip 0x1000
+pd:
+	.skip 0x1000
+pt1:
+	.skip 0x1000
+pt2: 
+	.skip 0x1000

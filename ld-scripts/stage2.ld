@@ -1,7 +1,7 @@
 ENTRY(_start)
 
 SECTIONS {
-	. = 0x8000;
+	. = 0x10000;
 	.text : {
 		*(.text)
 	}
@@ -12,5 +12,9 @@ SECTIONS {
 
 	.rodata : {
 		*(.rodata)
+	}
+
+	.bss : ALIGN(64K) {
+		*(.bss)
 	}
 }

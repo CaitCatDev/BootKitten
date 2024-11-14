@@ -5,7 +5,7 @@ CC=clang
 LD=ld
 OBJCOPY=objcopy
 
-CFLAGS=-ffreestanding -fno-builtin -mno-red-zone -fno-PIC -fno-PIE
+CFLAGS=-I ./includes/ -I ./includes/arch/x86/ -ffreestanding -fno-builtin -mno-red-zone -fno-PIC -fno-PIE
 
 MBR_OBJS=./src/arch/x86/stage1/mbr.o
 MBR_ELF=./mbr.elf
