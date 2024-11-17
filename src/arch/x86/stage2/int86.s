@@ -34,7 +34,7 @@ intx86_ret:
 	popq %rbx
 
 	pop %rbp
-
+	sti
 	ret
 
 .code32
@@ -150,6 +150,8 @@ intx86_real:
 	bswap %esp
 	
 	sti
+	hlt
+
 	/*https://www.felixcloutier.com/x86/intn:into:int3:int1*/
 	.byte 0xcd
 	int_no: .byte 0x00 /*Overwrite at runtime*/
@@ -238,8 +240,11 @@ _saved_idt:
 	.word 0x0000
 	.long 0x0000
 
-.data
+.global _saved_idt
+.global _saved_gdt
 
+.data
+.global _real_idt
 _real_idt:
 	.word 0x03ff
 	.long 0x0000
