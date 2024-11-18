@@ -35,6 +35,26 @@ typedef struct dap {
 	uint64_t lba;
 } dap_t;
 
+typedef struct drive_parameters {
+	uint16_t size;
+	uint16_t flags;
+	uint32_t cylinders;
+	uint32_t heads;
+	uint32_t sectors_per_track;
+	uint64_t sectors;
+	uint16_t sector_size;
+	uint32_t edd_config;
+	uint16_t dev_path_sig;
+	uint8_t dev_path_leng;
+	uint8_t reserved[3];
+	char busname[4];
+	char iftype[8];
+	char interface_path[8];
+	char device_path[8];
+	uint8_t reserved1;
+	uint8_t checksum;
+}__attribute__((packed)) drive_parameters_t;
+
 
 #define IDT_ENTRY_ATTR_PRESENT (1 << 7)
 #define IDT_ENTRY_ATTR_INT_GATE (0xe)
@@ -200,6 +220,13 @@ int init_serial(uint16_t port) {
 	return 0;
 }
 
+void dump_registers_x86(const x86_regs_t *regs) {
+	kprintf("EAX: 0x%x, EBX: 0x%x, ECX: 0x%x, EDX: 0x%x\n"
+			"EBP: 0x%x, ESI: 0x%x, EDI: 0x%x, EFLAGS: 0x%x\n",
+			regs->eax, regs->ebx, regs->ecx, regs->edx,
+			regs->ebp, regs->esi, regs->edi, regs->eflags);
+}
+
 __attribute__((noreturn)) void cmain(uint8_t disk) {
 	volatile short *vga = (volatile short*)0xb8000;
 	vga_clear_screen(0x1f);
@@ -208,7 +235,7 @@ __attribute__((noreturn)) void cmain(uint8_t disk) {
 	kstdio_init(vga_put_ch); /*for when I don't have a serial out*/
 #else
 	kstdio_init(write_serial);
-	if(init_serial(COM1) == 0) {
+	if(init_serial(COM1) != 0) {
 		kstdio_init(vga_put_ch); /*Fallback*/
 		kprintf("Erorr Init Serial Using VGA instead\n");
 	}
@@ -216,8 +243,7 @@ __attribute__((noreturn)) void cmain(uint8_t disk) {
 
 	kprintf("Stdio init done\n");
 	x86_regs_t regs = { 0 };
-	e820_mmap_t map = { 0 };
-	dap_t dap = { 0 };
+	drive_parameters_t parameters = { 0 };
 
 	memset(idt, 0, sizeof(idt));
 
@@ -242,6 +268,28 @@ __attribute__((noreturn)) void cmain(uint8_t disk) {
 	for(uint64_t i = 3; i > 0; i--) {
 		kprintf("Booting... %d\n", i);		
 		_sleep(1000);
+	}
+
+	/*Supports upto 16 disks*/
+	for(uint32_t disk = 0x80; disk < 0x8f; ++disk) {
+		memset(&regs, 0, sizeof(regs));
+		memset(&parameters, 0, sizeof(parameters));
+		parameters.size = 0x42;
+		parameters.flags = 0;
+		regs.ds = (uint64_t)&parameters >> 4 & 0xf000;
+		regs.esi = (uint64_t)&parameters;
+		regs.edx = disk;
+		regs.eax = 0x4800;
+
+		intx86(&regs, &regs, 0x13);
+		if(regs.eflags & 1) {
+			kprintf("0x%x drive error: %d\n", disk, regs.eax);
+		} else {
+			kprintf("Disk 0x%x present sector Size: %d\n", disk, parameters.sector_size);
+			if(parameters.size == 0x42) {
+				kprintf("  - Bus: %s-%s\n", parameters.busname, parameters.iftype);
+			}
+		}
 	}
 
 	while(1) {

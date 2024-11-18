@@ -34,7 +34,6 @@ intx86_ret:
 	popq %rbx
 
 	pop %rbp
-	sti
 	ret
 
 .code32
@@ -46,7 +45,12 @@ intx86_32:
 	mov %ax,%ss
 	mov %ax,%gs
 	mov %ax,%fs
-	
+	/*Precalculate for later*/
+	add $(4*8)+(2*4),%si
+	bswap %esi
+	shl $4,%si
+	bswap %esi
+	push %esi
 
 	mov %esp,_saved_stack /*Save the REAL stack*/
 	mov %esi,_rout
@@ -113,6 +117,9 @@ intx86_real:
 	mov %ax,%gs
 	mov %ax,%fs
 
+	mov $0x2000,%ax
+	mov %ax,%ss
+
 	/*Stack(%ss:%sp) now points to our code*/
 	mov %di,%sp
 	shr $4,%edi
@@ -139,6 +146,7 @@ intx86_real:
 	mov $_saved_stack,%esp
 	shr $4,%esp
 	and $0xf000,%sp
+	mov %sp,%ss
 	mov $_saved_stack,%esp
 	pop %esp
 	
@@ -148,40 +156,33 @@ intx86_real:
 	mov %sp,%ss
 	shr $4,%sp
 	bswap %esp
-	
 	sti
-	hlt
 
 	/*https://www.felixcloutier.com/x86/intn:into:int3:int1*/
 	.byte 0xcd
 	int_no: .byte 0x00 /*Overwrite at runtime*/
 
+
 	cli
-	/*Hmmm hecc. so we need to get the stack setup to output
+	/*Use the Value we put on the stack to avoid the operations
+	 *that overwrite the value of the eflags registers
+	 *Hmmm hecc. so we need to get the stack setup to output
 	 * registers but we don't wanna overwrite registers 
 	 */
-	mov $_rout,%esp
-	shr $4,%esp
-	and $0xf000,%sp
-	mov %sp,%ss
-	mov $_rout,%esp
+	
 	pop %esp
-
 	bswap %esp
-	shl $4,%sp
 	mov %sp,%ss
-	shr $4,%sp
 	bswap %esp
-	add $4*8+2*4,%sp
-
+	
 	push %fs
 	push %gs
 	push %es
 	push %ds
 
-	pushfl
 	push %ebp
-	
+	pushfl
+
 	push %esi
 	push %edi
 
@@ -189,6 +190,7 @@ intx86_real:
 	push %ebx
 	push %ecx
 	push %eax
+
 	mov $_saved_stack,%esp
 	shr $4,%esp
 	and $0xf000,%sp
@@ -201,7 +203,8 @@ intx86_real:
 	mov %sp,%ss
 	shr $4,%sp
 	bswap %esp
-	
+	add $4,%esp /*Saved stack starts at the data we saved so cast that off*/
+
 	/*Reload original IVT and GDT*/
 	mov $_saved_gdt,%eax
 	mov %ax,%bx
@@ -226,6 +229,10 @@ intx86_real:
 	jmpl $0x18,$intx86_32_ret
 
 .bss
+/*These symbols must remain in the same 64K as the stack
+ *This isn't a problem currently but may become one if the
+ *BSS section grows to large
+ */
 _rout:
 	.long 0x0000
 
