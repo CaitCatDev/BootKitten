@@ -29,7 +29,8 @@ _pm_start:
 	mov %ax,%ss
 	mov %ax,%gs
 	mov %ax,%fs
-
+	
+	push %edx
 
 _is_x86_64: #Check if this CPU is 64 or just 32bit
 	pushfl
@@ -100,16 +101,18 @@ _paging_init32:
 	or $0x100,%eax
 	wrmsr
 
+	pop %edi
 	mov %cr0,%eax
 	or $1<<31,%eax
 	mov %eax,%cr0
 	jmp $0x28,$_lm_start
+
 _no_lm:
 	mov $_lm_error_string,%esi
 	mov $0x4f,%ah
 	mov $0xb8000,%edi
 	jmp _puts32
-
+	
 _no_cpuid:
 	mov $_cpuid_error_string,%esi
 	mov $0x4f,%ah
@@ -137,7 +140,7 @@ _lm_start:
 	mov %ax,%fs
 
 	mov $_stack_top,%rsp
-
+	
 	jmp cmain
 	
 .global halt

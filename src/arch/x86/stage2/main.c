@@ -1,6 +1,6 @@
 #include <stdint.h>
-
 #include <x86int.h>
+#include <kstdio.h>
 
 typedef struct e820_mmap {
 	uint32_t base_low;
@@ -83,8 +83,138 @@ void *memcpy(void *dst, const void *src, uint64_t n) {
 	return dst;
 }
 
-__attribute__((noreturn)) void cmain() {
+static inline void out8(uint16_t port, uint8_t data) {
+    __asm__ volatile("outb %b0, %w1" : : "a" (data), "Nd" (port));
+}
+
+static inline uint8_t in8(uint16_t port) {
+    uint8_t data;
+    __asm__ volatile("inb %w1, %b0" : "=a" (data) : "Nd" (port));
+    return data;
+}
+
+static inline void out16(uint16_t port, uint16_t data) {
+    __asm__ volatile("outw %w0, %w1" : : "a" (data), "Nd" (port));
+}
+
+static inline uint16_t in16(uint16_t port) {
+    uint16_t data;
+    __asm__ volatile("inw %w1, %w0" : "=a" (data) : "Nd" (port));
+    return data;
+}
+
+static inline void out32(uint16_t port, uint32_t data) {
+    __asm__ volatile("outl %0, %w1" : : "a" (data), "Nd" (port));
+}
+
+static inline uint32_t in32(uint16_t port) {
+    uint32_t data;
+    __asm__ volatile("inl %w1, %0" : "=a" (data) : "Nd" (port));
+    return data;
+}
+
+
+#define COM1 0x3f8
+int is_transmit_empty(uint16_t port) {
+	return in8(port + 5) & 0x20;
+}
+
+void write_serial(uint8_t a) {
+	while (is_transmit_empty(COM1) == 0);
+	
+	if(a == '\n') {
+		out8(COM1, '\r');
+		while (is_transmit_empty(COM1) == 0);
+	}
+	out8(COM1,a);
+}
+
+static uint32_t x = 0;
+static uint32_t y = 0;
+static uint32_t xmax = 80;
+static uint32_t ymax = 25;
+
+void vga_clear_line(uint32_t line, uint8_t color) {
+	volatile short *vga = (volatile void*)0xb8000;
+	for(uint32_t lx = 0; lx < xmax; ++lx) {
+		vga[lx + line * xmax] = (color << 8) + ' ';
+	}
+}
+
+void vga_put_ch(uint8_t ch) {
+	volatile char *vga;
+
+	/*Scrolls the screen*/
+	if(y >= ymax) {
+		for(y = 0; y < ymax-1; ++y) {
+			memcpy((void*)((uint64_t)0xb8000 + (y * 160)), (const void*)((uint64_t)0xb8000 + ((y+1) * 160)), 160);
+		}
+		y = ymax - 1;
+		x = 0;
+		vga_clear_line(y, 0x1f);
+	}
+
+	vga = (volatile void*)0xb8000 + x * 2 + y * 160;
+
+	if(ch == '\n') {
+		y++;
+		x=0;
+	} else {
+		*vga = ch;
+		x++;
+	}
+}
+
+void vga_clear_screen(uint8_t color) {
+	volatile short *vga = (volatile void*)0xb8000;
+	for(uint32_t ly = 0; ly < ymax; ++ly) {
+		for(uint32_t lx = 0; lx < xmax; ++lx) {
+			vga[lx + ly * xmax] = (color << 8) + ' ';
+		}
+	}
+}
+
+int init_serial(uint16_t port) {
+	out8(port + 1, 0x00);
+	out8(port + 3, 0x80);
+	
+	/*Set timer*/
+	out8(port + 0, 0x03);
+	out8(port + 1, 0x00);
+
+	out8(port + 3, 3);
+	
+	/*FIFO*/
+	out8(port + 2, 0xc7);
+	out8(port + 4, 0x0b);
+	out8(port + 4, 0x1e);
+
+	/*Loopback*/
+	out8(port, 0xca);
+
+	if(in8(port) != 0xca) {
+		return -1;
+	}
+	
+	out8(port + 4, 0xf);
+	return 0;
+}
+
+__attribute__((noreturn)) void cmain(uint8_t disk) {
 	volatile short *vga = (volatile short*)0xb8000;
+	vga_clear_screen(0x1f);
+	
+#if defined DEBUG_TO_VGA
+	kstdio_init(vga_put_ch); /*for when I don't have a serial out*/
+#else
+	kstdio_init(write_serial);
+	if(init_serial(COM1) == 0) {
+		kstdio_init(vga_put_ch); /*Fallback*/
+		kprintf("Erorr Init Serial Using VGA instead\n");
+	}
+#endif
+
+	kprintf("Stdio init done\n");
 	x86_regs_t regs = { 0 };
 	e820_mmap_t map = { 0 };
 	dap_t dap = { 0 };
@@ -92,6 +222,7 @@ __attribute__((noreturn)) void cmain() {
 	memset(idt, 0, sizeof(idt));
 
 	for(uint8_t v = 0; v < 32; v++) {
+		/*TODO: Actually build and exception ISR table*/
 		idt_set_entry(v, &isr_no_err, 0x8e);
 	}
 	originalirq8 = 0;
@@ -107,52 +238,13 @@ __attribute__((noreturn)) void cmain() {
 	/*CLI is set so we only trigger this on actual exceptions*/
 	__asm__ volatile("lidt %0" : : "m" (idtr));
 	
-	vga[0] = 0x1f00 | 'B';
-	vga[1] = 0x1f00 | 'o';	
-	vga[2] = 0x1f00 | 'o';
-	vga[3] = 0x1f00 | 't';
-	vga[4] = 0x1f00 | 'i';	
-	vga[5] = 0x1f00 | 'n';
-	vga[6] = 0x1f00 | 'g';
-
 
 	for(uint64_t i = 3; i > 0; i--) {
-		vga[8] = 0x1f00 | i + 0x30;
+		kprintf("Booting... %d\n", i);		
 		_sleep(1000);
 	}
-
-	vga[8] = ' ';
-
-	dap.lba = 7;
-	dap.size = 0x10;
-	dap.blocks = (36112 / 512) + 1;
-	dap.offset = 0x1000;
-	dap.segment = 0x5000;
-
-	regs.eax = 0x4200;
-	regs.edx = 0x80;
-	regs.ds = (((uint64_t)&dap) >> 4) & 0xf000;
-	regs.esi = (((uint64_t)&dap) & 0xffff);
-
-	intx86(&regs, &regs, 0x13);
-	/*This only works cause of ungodly hard coding but yea
-	 *It is based on my kernel image and this just an initial proof of 
-	 *concept
-	 *TODO: Load Kernel from filesystem more inteligently I.E. finding it
-	 *on the disk rather than just assuming it's at sector 6
-	 *TODO: Load the Kernel elf correctly. I.E. actually parse the headers
-	 *TODO: support kernels bigger than 64KB
-	 *TODO: Also check that memory at that address is even free(it normally should be)
-	 */
-	/*Load Text*/
-	memcpy((void*)0x100000, (const void *)0x52000, 0x5000);
-	/*Load Rodata*/
-	memcpy((void*)0x105000, (const void *)0x57000, 0x16b8);
-	memcpy((void*)0x107000, (const void *)0x59000, 0x51);
-
-	_boot_multiboot2();
 
 	while(1) {
-		_sleep(1000);
-	}
+		_sleep(500);
+}
 }

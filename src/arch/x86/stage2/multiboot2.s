@@ -15,7 +15,7 @@ _boot_multiboot2:
 	pushq %r13
 	pushq %r14
 	pushq %r15
-	
+
 	pushq $0x18
 	pushq $_boot_multiboot2_32
 	lretq
