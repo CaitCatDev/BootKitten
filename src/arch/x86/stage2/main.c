@@ -2,6 +2,9 @@
 #include <x86int.h>
 #include <kstdio.h>
 
+#include <disk/gpt.h>
+#include <disk/mbr.h>
+
 typedef struct e820_mmap {
 	uint32_t base_low;
 	uint32_t base_hi;
@@ -103,6 +106,19 @@ void *memcpy(void *dst, const void *src, uint64_t n) {
 	return dst;
 }
 
+int memcmp(const void *m1, const void *m2, uint64_t size) {
+	const uint8_t *m1u8 = m1;
+	const uint8_t *m2u8 = m2;
+
+	for(uint64_t i = 0; i < size; ++i) {
+		if(m1u8[i] != m2u8[i]) {
+			return m1u8 - m2u8;
+		}
+	}
+
+	return 0;
+}
+
 static inline void out8(uint16_t port, uint8_t data) {
     __asm__ volatile("outb %b0, %w1" : : "a" (data), "Nd" (port));
 }
@@ -161,6 +177,15 @@ void vga_clear_line(uint32_t line, uint8_t color) {
 	}
 }
 
+void vga_mov_cursor(uint32_t x, uint32_t y) {
+	uint16_t pos = y * 80 + x;
+
+	out8(0x3d4, 0x0f);
+	out8(0x3d5, pos);
+	out8(0x3d4, 0x0e);
+	out8(0x3d5, pos >> 8);
+}
+
 void vga_put_ch(uint8_t ch) {
 	volatile char *vga;
 
@@ -183,6 +208,8 @@ void vga_put_ch(uint8_t ch) {
 		*vga = ch;
 		x++;
 	}
+
+	vga_mov_cursor(x, y);
 }
 
 void vga_clear_screen(uint8_t color) {
@@ -192,6 +219,9 @@ void vga_clear_screen(uint8_t color) {
 			vga[lx + ly * xmax] = (color << 8) + ' ';
 		}
 	}
+	x = 0;
+	y = 0;
+	vga_mov_cursor(x, y);
 }
 
 int init_serial(uint16_t port) {
@@ -227,6 +257,51 @@ void dump_registers_x86(const x86_regs_t *regs) {
 			regs->ebp, regs->esi, regs->edi, regs->eflags);
 }
 
+/*Determine if this disk looks like an MBR disk*/
+/*This is harder than GPT as there is no direct magic bytes
+ * we can just look at to determine what this disk is
+ */
+int is_mbr(mbr_t *mbr) {
+	mbr_part_t part = { 0 }; /*Create a zeroed out part*/
+	uint8_t no_parts = 1;
+	if(!mbr) {
+		return -1;
+	}
+
+	for(uint8_t i = 0; i < 4; ++i) {
+		if(memcmp(&part, &mbr->parts[i], 16) != 0) {
+			no_parts = 0;
+		}
+	}
+
+	if(no_parts) {
+		/*at this point it doesn't matter
+		 *even if we are mbr we don't have any parts
+		 */
+		return -1;
+	}
+
+	if(mbr->parts[0].type == 0xee) {
+		return -1; /*Protective MBR*/
+	}
+
+	/*We should maybe run more test but this works for early code*/
+	return 0;
+}
+
+/*Determine if this disk looks like a GPT disk*/
+int is_gpt(mbr_t *mbr, gpt_header_t *gpt) {
+	if(!mbr || !gpt) {
+		return -1;
+	}
+
+	if(mbr->parts[0].type != 0xee && memcmp("EFI PART", gpt->magic, 8) != 0) {
+		return -1;
+	}
+
+	return 0;
+}
+
 __attribute__((noreturn)) void cmain(uint8_t disk) {
 	volatile short *vga = (volatile short*)0xb8000;
 	vga_clear_screen(0x1f);
@@ -244,6 +319,7 @@ __attribute__((noreturn)) void cmain(uint8_t disk) {
 	kprintf("Stdio init done\n");
 	x86_regs_t regs = { 0 };
 	drive_parameters_t parameters = { 0 };
+	dap_t dap = { 0 };
 
 	memset(idt, 0, sizeof(idt));
 
@@ -271,7 +347,7 @@ __attribute__((noreturn)) void cmain(uint8_t disk) {
 	}
 
 	/*Supports upto 16 disks*/
-	for(uint32_t disk = 0x80; disk < 0x8f; ++disk) {
+	for(uint32_t disk = 0x80; disk < 0x80 + *((uint8_t*)0x475); ++disk) {
 		memset(&regs, 0, sizeof(regs));
 		memset(&parameters, 0, sizeof(parameters));
 		parameters.size = 0x42;
@@ -284,15 +360,58 @@ __attribute__((noreturn)) void cmain(uint8_t disk) {
 		intx86(&regs, &regs, 0x13);
 		if(regs.eflags & 1) {
 			kprintf("0x%x drive error: %d\n", disk, regs.eax);
-		} else {
-			kprintf("Disk 0x%x present sector Size: %d\n", disk, parameters.sector_size);
-			if(parameters.size == 0x42) {
-				kprintf("  - Bus: %s-%s\n", parameters.busname, parameters.iftype);
-			}
+			continue;
+		} 
+		
+		kprintf("Disk 0x%x present sector Size: %d\n", disk, parameters.sector_size);
+		if(parameters.size == 0x42) {
+			kprintf("  - Bus: %s-%s\n", parameters.busname, parameters.iftype);
 		}
+
+		dap.size = 0x10;
+		dap.lba = 0;
+		dap.blocks = 2;
+		dap.offset = 0x3000;
+
+		regs.eax = 0x4200;
+		regs.esi = (uint64_t)&dap;
+		regs.edx = disk;
+		intx86(&regs, &regs, 0x13);
+		mbr_t *mbr = (void*)0x3000;
+		gpt_header_t *gpt = (void*)0x3200;
+		if(is_gpt(mbr, gpt) == 0) {
+			kprintf("  - Disk is GPT Part Scheme\n");
+			for(uint32_t i = 0; i < 128 / 4; ++i) {
+				gpt_part_t empty = { 0 };
+				gpt_part_t *parts = (void*)0x4000;
+				regs.eax = 0x4200;
+				dap.lba = 2 + i;
+				dap.offset = 0x4000;
+				dap.blocks = 1;
+				intx86(&regs, &regs, 0x13);
+				for(uint8_t j = 0; j < 4; ++j) {
+					if(memcmp(&empty, &parts[j], sizeof(empty)) == 0) {
+						continue;
+					}
+					kprintf("  - Part %d LBA Range: 0x%x-0x%x\n", j + (i * 4), parts[j].first_lba, parts[j].last_lba);
+				}
+			}
+
+		} else if(is_mbr(mbr) == 0) {
+			kprintf("  - Disk is MBR Part Scheme\n");
+			mbr_part_t part = { 0 };
+			for(uint8_t i = 0; i < 4; i++) {
+				if(memcmp(&part, &mbr->parts[i], sizeof(part)) != 0) {
+					kprintf("  - Part %d LBA Range: 0x%x-0x%x\n", i, mbr->parts[i].lba_start, mbr->parts[i].lba_start + mbr->parts[i].sectors);
+				}
+			}
+		} else {
+			kprintf("  - Disk is Unknown Part scheme\n");
+		}
+
 	}
 
 	while(1) {
 		_sleep(500);
-}
+	}
 }
